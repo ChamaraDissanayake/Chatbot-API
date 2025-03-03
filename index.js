@@ -1,6 +1,6 @@
-import openai from "./config/open-ai.js";
 import express from "express";
 import cors from "cors";
+import { openai, assistantId } from "./config/open-ai.js"; // Import from open-ai.js
 
 const app = express();
 const port = 3000;
@@ -8,76 +8,88 @@ const port = 3000;
 app.use(cors());
 app.use(express.json());
 
-// In-memory chat history per user
-const chatHistoryMap = {};
+// In-memory storage for thread IDs per user (replace with DB later)
+const userThreadMap = {};
 
 app.post("/chat", async (req, res) => {
   try {
     const { userId, userInput } = req.body;
 
-    // Initialize chat history with strict guidelines
-    if (!chatHistoryMap[userId]) {
-      chatHistoryMap[userId] = [
-        ["system",
-          `Company: Go Smart Solutions  
-          Industry: Technology & Software (UAE & GCC)  
-
-          Services:  
-          - Custom Software (eCommerce, HR, finance, logistics, warehouse, shipping, inventory, ROAD recharge, meeting room booking)  
-          - AI & Machine Learning (automation, predictive analytics, NLP, computer vision, AI chatbots, analytics)  
-          - Cloud & SaaS (multi-tenant SaaS, subscriptions, cloud integration, APIs)  
-          - Cybersecurity (enterprise security, risk assessment, compliance)  
-          - Web & Mobile Apps (custom UI/UX, responsive design, CMS, eCommerce, web apps)  
-          - Automation & Chatbots (real-time AI chatbots, process automation)  
-
-          Expertise:  
-          - Frontend: React, UI/UX, responsive design  
-          - Backend: Laravel, APIs, security  
-          - Database: SQL optimization, cloud-based architectures  
-          - AI & Automation: AI-driven analytics, ML, automation  
-
-          Strengths:  
-          - Scalable, secure solutions by experienced professionals  
-          - AI-driven innovation  
-          - Proven track record across UAE & GCC  
-          - Customer-centric, tailored strategies  
-
-          Location: Alfutaim Office Tower, Day to Day Building, 1st Floor - Office 102, Smart Hub HQ  
-          Contact: +971 50 440 6565 | Ibrahim@smartclassic.ae  
-
-          Guidelines:  
-          - Answer only about Go Smart Solutions like services, locations, contact etc.  
-          - Keep responses short and direct (max 2 sentences).`
-        ]
-      ];
+    if (!userId || !userInput) {
+      return res.status(400).json({ error: "userId and userInput are required" });
     }
 
-    const chatHistory = chatHistoryMap[userId];
+    let threadId = userThreadMap[userId];
 
-    // Prepare messages for OpenAI API
-    const messages = chatHistory.map(([role, content]) => ({ role, content }));
-    messages.push({ role: "user", content: userInput });
+    if (!threadId) {
+      const thread = await openai.beta.threads.create();
+      threadId = thread.id;
+      userThreadMap[userId] = threadId;
+    }
 
-    // Call OpenAI API
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: messages
+    await openai.beta.threads.messages.create(threadId, {
+      role: "user",
+      content: userInput,
     });
 
-    const botResponse = completion.choices[0].message.content.trim();
+    const run = await openai.beta.threads.runs.create(threadId, {
+      assistant_id: assistantId,
+    });
 
-    // Store chat history
-    chatHistory.push(["user", userInput]);
-    chatHistory.push(["assistant", botResponse]);
-
-    // Keep history manageable: Remove old user & assistant messages but **keep system message**
-    if (chatHistory.length > 10) {
-      chatHistory.splice(1, chatHistory.length - 9); // Keeps system message at index 0
+    let runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
+    while (runStatus.status !== "completed") {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
     }
+
+    // ✅ Optimized: Fetch only the latest assistant message
+    const messages = await openai.beta.threads.messages.list(threadId, { order: "desc", limit: 1 });
+
+    const botResponse = messages.data.length > 0 ? messages.data[0].content[0].text.value : "I'm not sure how to respond.";
 
     res.json({ botResponse });
   } catch (error) {
     console.error("Error processing chat:", error);
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to retrieve full chat history for a user
+app.get("/chat/history", async (req, res) => {
+  try {
+    const { userId, limit = 10, offset = 0 } = req.query;
+
+    // Validate input
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    // Retrieve threadId from memory (replace with DB later)
+    const threadId = userThreadMap[userId];
+
+    if (!threadId) {
+      return res.status(404).json({ error: "No chat history found for this user" });
+    }
+
+    // Fetch messages with pagination (limit + offset)
+    const messages = await openai.beta.threads.messages.list(threadId, {
+      limit: parseInt(limit) + parseInt(offset), // Fetch extra messages to apply offset
+      order: "desc", // Get latest messages first
+    });
+
+    // Apply offset manually
+    const paginatedMessages = messages.data.slice(offset, offset + parseInt(limit));
+
+    // Format response
+    const chatHistory = paginatedMessages.map((msg) => ({
+      role: msg.role,
+      content: msg.content[0].text.value,
+      timestamp: msg.created_at,
+    }));
+
+    res.json({ chatHistory });
+  } catch (error) {
+    console.error("Error retrieving chat history:", error);
     res.status(500).json({ error: "Something went wrong" });
   }
 });

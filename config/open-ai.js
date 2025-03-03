@@ -3,7 +3,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY, //Note that the .env file is not uploaded due to security reasons
+    apiKey: process.env.OPENAI_API_KEY,
 });
 
-export default openai;
+const assistantId = process.env.OPENAI_ASSISTANT_ID;
+
+export { openai, assistantId };
