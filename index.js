@@ -13,6 +13,8 @@ const userThreadMap = {};
 
 app.post("/chat", async (req, res) => {
   try {
+    console.log("User request", req);
+
     const { userId, userInput } = req.body;
 
     if (!userId || !userInput) {
@@ -42,10 +44,11 @@ app.post("/chat", async (req, res) => {
       runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
     }
 
-    // ✅ Optimized: Fetch only the latest assistant message
+    // Optimized: Fetch only the latest assistant message
     const messages = await openai.beta.threads.messages.list(threadId, { order: "desc", limit: 1 });
 
     const botResponse = messages.data.length > 0 ? messages.data[0].content[0].text.value : "I'm not sure how to respond.";
+    console.log("userId", userId, "userInput", userInput, "botResponse", botResponse);
 
     res.json({ botResponse });
   } catch (error) {
