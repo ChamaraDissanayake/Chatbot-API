@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { openai, assistantId } from "./config/open-ai.js"; // Import from open-ai.js
+import db from "./database.js";
+import { deleteOldMessages } from "./database.js";
 
 const app = express();
 const port = 3000;
@@ -13,8 +15,6 @@ const userThreadMap = {};
 
 app.post("/chat", async (req, res) => {
   try {
-    console.log("User request", req);
-
     const { userId, userInput } = req.body;
 
     if (!userId || !userInput) {
@@ -23,12 +23,20 @@ app.post("/chat", async (req, res) => {
 
     let threadId = userThreadMap[userId];
 
+    // Retrieve thread from DB if not in memory
     if (!threadId) {
-      const thread = await openai.beta.threads.create();
-      threadId = thread.id;
+      const thread = db.prepare("SELECT id FROM chat_threads WHERE user_id = ?").get(userId);
+      if (thread) {
+        threadId = thread.id;
+      } else {
+        const newThread = await openai.beta.threads.create();
+        threadId = newThread.id;
+        db.prepare("INSERT INTO chat_threads (id, user_id) VALUES (?, ?)").run(threadId, userId);
+      }
       userThreadMap[userId] = threadId;
     }
 
+    // Send user input to OpenAI API
     await openai.beta.threads.messages.create(threadId, {
       role: "user",
       content: userInput,
@@ -44,11 +52,14 @@ app.post("/chat", async (req, res) => {
       runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
     }
 
-    // Optimized: Fetch only the latest assistant message
+    // Fetch latest assistant message
     const messages = await openai.beta.threads.messages.list(threadId, { order: "desc", limit: 1 });
-
     const botResponse = messages.data.length > 0 ? messages.data[0].content[0].text.value : "I'm not sure how to respond.";
-    console.log("userId", userId, "userInput", userInput, "botResponse", botResponse);
+
+    // Store messages in SQLite
+    const insertMessage = db.prepare("INSERT INTO chat_messages (thread_id, role, content) VALUES (?, ?, ?)");
+    insertMessage.run(threadId, "user", userInput);
+    insertMessage.run(threadId, "assistant", botResponse);
 
     res.json({ botResponse });
   } catch (error) {
@@ -61,41 +72,29 @@ app.post("/chat", async (req, res) => {
 app.get("/chat/history", async (req, res) => {
   try {
     const { userId, limit = 10, offset = 0 } = req.query;
+    if (!userId) return res.status(400).json({ error: "userId is required" });
 
-    // Validate input
-    if (!userId) {
-      return res.status(400).json({ error: "userId is required" });
-    }
+    // Get thread ID
+    const thread = db.prepare("SELECT id FROM chat_threads WHERE user_id = ?").get(userId);
+    if (!thread) return res.status(404).json({ error: "No chat history found" });
 
-    // Retrieve threadId from memory (replace with DB later)
-    const threadId = userThreadMap[userId];
+    // Fetch messages with pagination
+    const messages = db
+      .prepare("SELECT role, content, timestamp FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT ? OFFSET ?")
+      .all(thread.id, parseInt(limit), parseInt(offset));
 
-    if (!threadId) {
-      return res.status(404).json({ error: "No chat history found for this user" });
-    }
-
-    // Fetch messages with pagination (limit + offset)
-    const messages = await openai.beta.threads.messages.list(threadId, {
-      limit: parseInt(limit) + parseInt(offset), // Fetch extra messages to apply offset
-      order: "desc", // Get latest messages first
-    });
-
-    // Apply offset manually
-    const paginatedMessages = messages.data.slice(offset, offset + parseInt(limit));
-
-    // Format response
-    const chatHistory = paginatedMessages.map((msg) => ({
-      role: msg.role,
-      content: msg.content[0].text.value,
-      timestamp: msg.created_at,
-    }));
-
-    res.json({ chatHistory });
+    res.json({ chatHistory: messages });
   } catch (error) {
     console.error("Error retrieving chat history:", error);
     res.status(500).json({ error: "Something went wrong" });
   }
 });
+
+// Run cleanup every 24 hours
+setInterval(() => {
+  console.log("🔄 Running chat history cleanup...");
+  deleteOldMessages();
+}, 24 * 60 * 60 * 1000); // 24 hours
 
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);

@@ -10,11 +10,13 @@
   "license": "ISC",
   "description": "Chatbot powered by OpenAI",
   "dependencies": {
+    "better-sqlite3": "^11.9.1",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "openai": "^4.78.1",
-    "readline-sync": "^1.4.10"
+    "readline-sync": "^1.4.10",
+    "sqlite3": "^5.1.7"
   }
 }
